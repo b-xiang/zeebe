@@ -77,6 +77,8 @@ public class ExporterStreamProcessor implements StreamProcessor {
     return state;
   }
 
+
+
   @Override
   public EventProcessor onEvent(LoggedEvent event) {
     final EventProcessor processor;
@@ -100,6 +102,12 @@ public class ExporterStreamProcessor implements StreamProcessor {
     for (final ExporterContainer container : containers) {
       container.exporter.configure(container.context);
     }
+
+    context.setEventFilter(event -> {
+      // TODO (saig0): configure filter based on exporter configurations
+
+      return true;
+    });
   }
 
   @Override
