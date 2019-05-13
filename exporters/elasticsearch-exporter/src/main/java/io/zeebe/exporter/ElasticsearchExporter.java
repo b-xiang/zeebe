@@ -20,9 +20,11 @@ import io.zeebe.exporter.api.context.Context;
 import io.zeebe.exporter.api.context.Controller;
 import io.zeebe.exporter.api.record.Record;
 import io.zeebe.exporter.api.spi.Exporter;
+import io.zeebe.protocol.clientapi.RecordType;
 import io.zeebe.protocol.clientapi.ValueType;
-import java.time.Duration;
 import org.slf4j.Logger;
+
+import java.time.Duration;
 
 public class ElasticsearchExporter implements Exporter {
 
@@ -44,6 +46,19 @@ public class ElasticsearchExporter implements Exporter {
     configuration =
         context.getConfiguration().instantiate(ElasticsearchExporterConfiguration.class);
     log.debug("Exporter configured with {}", configuration);
+
+    context.setFilter(
+        new Context.RecordFilter() {
+          @Override
+          public boolean acceptType(RecordType recordType) {
+            return configuration.shouldIndexRecordType(recordType);
+          }
+
+          @Override
+          public boolean acceptValue(ValueType valueType) {
+            return configuration.shouldIndexValueType(valueType);
+          }
+        });
   }
 
   @Override

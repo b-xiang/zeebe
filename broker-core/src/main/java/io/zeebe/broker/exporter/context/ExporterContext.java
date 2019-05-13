@@ -19,11 +19,15 @@ package io.zeebe.broker.exporter.context;
 
 import io.zeebe.exporter.api.context.Configuration;
 import io.zeebe.exporter.api.context.Context;
+import io.zeebe.protocol.clientapi.RecordType;
+import io.zeebe.protocol.clientapi.ValueType;
 import org.slf4j.Logger;
 
 public class ExporterContext implements Context {
   private final Logger logger;
   private final Configuration configuration;
+
+  private RecordFilter filter = new DefaultRecordFilter();
 
   public ExporterContext(final Logger logger, final Configuration configuration) {
     this.logger = logger;
@@ -38,5 +42,27 @@ public class ExporterContext implements Context {
   @Override
   public Configuration getConfiguration() {
     return configuration;
+  }
+
+  @Override
+  public void setFilter(RecordFilter filter) {
+    this.filter = filter;
+  }
+
+  public RecordFilter getFilter() {
+    return filter;
+  }
+
+  private static class DefaultRecordFilter implements RecordFilter {
+
+    @Override
+    public boolean acceptType(RecordType recordType) {
+      return true;
+    }
+
+    @Override
+    public boolean acceptValue(ValueType valueType) {
+      return true;
+    }
   }
 }

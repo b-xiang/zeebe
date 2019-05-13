@@ -25,6 +25,7 @@ import io.zeebe.broker.exporter.repo.ExporterDescriptor;
 import io.zeebe.broker.exporter.stream.ExporterRecord.ExporterPosition;
 import io.zeebe.db.DbContext;
 import io.zeebe.db.ZeebeDb;
+import io.zeebe.exporter.api.context.Context;
 import io.zeebe.exporter.api.context.Controller;
 import io.zeebe.exporter.api.record.Record;
 import io.zeebe.exporter.api.spi.Exporter;
@@ -32,16 +33,17 @@ import io.zeebe.logstreams.log.LoggedEvent;
 import io.zeebe.logstreams.processor.EventProcessor;
 import io.zeebe.logstreams.processor.StreamProcessor;
 import io.zeebe.logstreams.processor.StreamProcessorContext;
+import io.zeebe.protocol.clientapi.RecordType;
 import io.zeebe.protocol.clientapi.ValueType;
 import io.zeebe.protocol.impl.record.RecordMetadata;
 import io.zeebe.util.buffer.BufferUtil;
 import io.zeebe.util.sched.ActorControl;
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-import java.util.stream.Collectors;
 import org.slf4j.Logger;
+
+import java.time.Duration;
+import java.util.*;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 public class ExporterStreamProcessor implements StreamProcessor {
 
@@ -77,8 +79,6 @@ public class ExporterStreamProcessor implements StreamProcessor {
     return state;
   }
 
-
-
   @Override
   public EventProcessor onEvent(LoggedEvent event) {
     final EventProcessor processor;
@@ -103,11 +103,38 @@ public class ExporterStreamProcessor implements StreamProcessor {
       container.exporter.configure(container.context);
     }
 
-    context.setEventFilter(event -> {
-      // TODO (saig0): configure filter based on exporter configurations
+    final List<Context.RecordFilter> recordFilters =
+        containers.stream().map(c -> c.context.getFilter()).collect(Collectors.toList());
 
-      return true;
-    });
+    final Map<RecordType, Boolean> acceptRecordType =
+        Arrays.stream(RecordType.values())
+            .collect(
+                Collectors.toMap(
+                    Function.identity(),
+                    type -> recordFilters.stream().anyMatch(f -> f.acceptType(type))));
+
+    final Map<ValueType, Boolean> acceptValueType =
+        Arrays.stream(ValueType.values())
+            .collect(
+                Collectors.toMap(
+                    Function.identity(),
+                    type -> recordFilters.stream().anyMatch(f -> f.acceptValue(type))));
+
+    LOG.info(
+        "Setting event filter for exporters which accepts records of type {} and value {}",
+        acceptRecordType,
+        acceptValueType);
+
+    final RecordMetadata metadata = new RecordMetadata();
+    context.setEventFilter(
+        event -> {
+          event.readMetadata(metadata);
+
+          final RecordType recordType = metadata.getRecordType();
+          final ValueType valueType = metadata.getValueType();
+
+          return acceptRecordType.get(recordType) && acceptValueType.get(valueType);
+        });
   }
 
   @Override
@@ -238,6 +265,7 @@ public class ExporterStreamProcessor implements StreamProcessor {
         final ExporterContainer container = containers.get(exporterIndex);
 
         try {
+          // TODO (saig0): check if the record is accepted by the exporter's filter
           if (container.position < record.getPosition()) {
             container.exporter.export(record);
           }

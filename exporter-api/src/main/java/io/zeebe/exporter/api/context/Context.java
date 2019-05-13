@@ -15,6 +15,8 @@
  */
 package io.zeebe.exporter.api.context;
 
+import io.zeebe.protocol.clientapi.RecordType;
+import io.zeebe.protocol.clientapi.ValueType;
 import org.slf4j.Logger;
 
 /** Encapsulates context associated with the exporter on open. */
@@ -24,4 +26,15 @@ public interface Context {
 
   /** @return configuration for this exporter */
   Configuration getConfiguration();
+
+  void setFilter(RecordFilter filter);
+
+  interface RecordFilter {
+
+    boolean acceptType(RecordType recordType);
+
+    boolean acceptValue(ValueType valueType);
+
+  }
+
 }
