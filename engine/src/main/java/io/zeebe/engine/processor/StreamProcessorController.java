@@ -38,9 +38,6 @@ public class StreamProcessorController extends Actor {
 
   private static final Logger LOG = Loggers.LOGSTREAMS_LOGGER;
 
-  private static final String ERROR_MESSAGE_RECOVER_FROM_SNAPSHOT_FAILED =
-      "Expected to find event with the snapshot position %s in log stream, but nothing was found. Failed to recover with processor '%s'.";
-
   private final StreamProcessorFactory streamProcessorFactory;
   private final boolean deleteDataOnSnapshot;
   private StreamProcessor streamProcessor;
@@ -171,16 +168,9 @@ public class StreamProcessorController extends Actor {
     streamProcessor = streamProcessorFactory.createProcessor(actor, zeebeDb, dbContext);
 
     final long snapshotPosition = streamProcessor.getPositionToRecoverFrom();
-    logStreamReader.seekToFirstEvent(); // reset seek position
-    if (lowerBoundSnapshotPosition > -1 && snapshotPosition > -1) {
-      final boolean found = logStreamReader.seek(snapshotPosition);
-      if (found && logStreamReader.hasNext()) {
-        logStreamReader.seek(snapshotPosition + 1);
-      } else {
-        throw new IllegalStateException(
-            String.format(ERROR_MESSAGE_RECOVER_FROM_SNAPSHOT_FAILED, snapshotPosition, getName()));
-      }
-    }
+
+    ReaderRecover.recoverReader(
+        logStreamReader, lowerBoundSnapshotPosition, snapshotPosition, getName());
 
     LOG.info(
         "Recovered state of partition {} from snapshot at position {}",
@@ -203,7 +193,7 @@ public class StreamProcessorController extends Actor {
             logStream::registerOnCommitPositionUpdatedCondition,
             logStream::removeOnCommitPositionUpdatedCondition,
             logStream::getCommitPosition,
-            metrics,
+            metrics.getSnapshotMetrics(),
             maxSnapshots,
             deleteDataOnSnapshot ? logStream::delete : pos -> {});
 
@@ -241,7 +231,6 @@ public class StreamProcessorController extends Actor {
     if (!isFailed()) {
       actor.run(
           () -> {
-            final LogStream logStream = streamProcessorContext.logStream;
             if (asyncSnapshotDirector != null) {
               actor.runOnCompletionBlockingCurrentPhase(
                   asyncSnapshotDirector.enforceSnapshotCreation(
