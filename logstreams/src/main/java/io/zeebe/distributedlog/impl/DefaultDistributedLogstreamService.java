@@ -278,7 +278,12 @@ public class DefaultDistributedLogstreamService
         new SnapshotRestoreStrategy(
             restoreClient, localMemberId, partitionId, logStream, logReplicator);
     return new PartitionLeaderStrategyPicker(
-        electionController, restoreClient, logReplicator, snapshotRestoreStrategy, localMemberId, restoreThreadContext);
+        electionController,
+        restoreClient,
+        logReplicator,
+        snapshotRestoreStrategy,
+        localMemberId,
+        restoreThreadContext);
   }
 
   @Override
