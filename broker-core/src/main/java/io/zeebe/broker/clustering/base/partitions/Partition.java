@@ -124,6 +124,9 @@ public class Partition implements Service<Partition> {
 
       processorSnapshotController.consumeReplicatedSnapshots(logStream::delete);
       exporterSnapshotController.consumeReplicatedSnapshots(pos -> {});
+
+      restoreContext.setProcessorSnapshotController(processorSnapshotController);
+      restoreContext.setExporterSnapshotController(exporterSnapshotController);
     } else {
       restoreContext.startRestoreServer(
           logStream, processorSnapshotController, exporterSnapshotController);

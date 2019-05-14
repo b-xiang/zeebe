@@ -27,22 +27,32 @@ public class BrokerRestoreFactory implements RestoreClientFactory {
   private final String replicationTopic;
   private final String restoreInfoTopic;
   private final String snapshotRequestTopic;
+  private final String snapshotInfoRequestTopic;
 
   public BrokerRestoreFactory(ClusterCommunicationService communicationService, int partitionId) {
     this.communicationService = communicationService;
     this.replicationTopic = String.format("log-replication-%d", partitionId);
     this.restoreInfoTopic = String.format("restore-info-%d", partitionId);
     this.snapshotRequestTopic = String.format("snapshot-request-%d", partitionId);
+    this.snapshotInfoRequestTopic = String.format("snapshot-info-request-%d", partitionId);
   }
 
   @Override
   public RestoreClient createClient() {
     return new BrokerRestoreClient(
-        communicationService, replicationTopic, restoreInfoTopic, snapshotRequestTopic);
+        communicationService,
+        replicationTopic,
+        restoreInfoTopic,
+        snapshotRequestTopic,
+        snapshotInfoRequestTopic);
   }
 
   public RestoreServer createServer() {
     return new BrokerRestoreServer(
-        communicationService, replicationTopic, restoreInfoTopic, snapshotRequestTopic);
+        communicationService,
+        replicationTopic,
+        restoreInfoTopic,
+        snapshotRequestTopic,
+        snapshotInfoRequestTopic);
   }
 }

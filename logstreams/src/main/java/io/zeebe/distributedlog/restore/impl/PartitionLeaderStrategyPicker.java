@@ -36,6 +36,7 @@ import java.util.concurrent.CompletableFuture;
 public class PartitionLeaderStrategyPicker implements RestoreStrategyPicker {
   private final PartitionLeaderElectionController electionController;
   private final RestoreClient client;
+  private final SnapshotRestoreStrategy snapshotRestoreStrategy;
   private final String localMemberId;
   private final Scheduler scheduler;
   private final LogReplicator logReplicator;
@@ -44,11 +45,13 @@ public class PartitionLeaderStrategyPicker implements RestoreStrategyPicker {
       PartitionLeaderElectionController electionController,
       RestoreClient client,
       LogReplicator logReplicator,
+      SnapshotRestoreStrategy snapshotRestoreStrategy,
       String localMemberId,
       Scheduler scheduler) {
     this.electionController = electionController;
     this.client = client;
     this.logReplicator = logReplicator;
+    this.snapshotRestoreStrategy = snapshotRestoreStrategy;
     this.localMemberId = localMemberId;
     this.scheduler = scheduler;
   }
@@ -97,7 +100,9 @@ public class PartitionLeaderStrategyPicker implements RestoreStrategyPicker {
 
     switch (response.getReplicationTarget()) {
       case SNAPSHOT:
-        result.completeExceptionally(new UnsupportedOperationException("not yet implemented"));
+        snapshotRestoreStrategy.setBackupPosition(backupPosition);
+        snapshotRestoreStrategy.setServer(server);
+        result.complete(snapshotRestoreStrategy);
         break;
       case EVENTS:
         result.complete(() -> logReplicator.replicate(server, latestLocalPosition, backupPosition));
