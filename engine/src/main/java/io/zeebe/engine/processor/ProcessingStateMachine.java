@@ -17,13 +17,26 @@
  */
 package io.zeebe.engine.processor;
 
+import static io.zeebe.engine.processor.TypedEventRegistry.EVENT_REGISTRY;
+
 import io.zeebe.db.DbContext;
 import io.zeebe.db.ZeebeDbTransaction;
+import io.zeebe.engine.state.ZeebeState;
 import io.zeebe.logstreams.impl.Loggers;
 import io.zeebe.logstreams.log.LogStream;
 import io.zeebe.logstreams.log.LogStreamReader;
-import io.zeebe.logstreams.log.LogStreamRecordWriter;
 import io.zeebe.logstreams.log.LoggedEvent;
+import io.zeebe.msgpack.UnpackedObject;
+import io.zeebe.protocol.WorkflowInstanceRelated;
+import io.zeebe.protocol.clientapi.RecordType;
+import io.zeebe.protocol.clientapi.RejectionType;
+import io.zeebe.protocol.clientapi.ValueType;
+import io.zeebe.protocol.impl.record.RecordMetadata;
+import io.zeebe.protocol.impl.record.value.error.ErrorRecord;
+import io.zeebe.protocol.intent.ErrorIntent;
+import io.zeebe.protocol.intent.Intent;
+import io.zeebe.protocol.intent.WorkflowInstanceRelatedIntent;
+import io.zeebe.util.ReflectUtil;
 import io.zeebe.util.exception.RecoverableException;
 import io.zeebe.util.retry.AbortableRetryStrategy;
 import io.zeebe.util.retry.RecoverableRetryStrategy;
@@ -31,6 +44,7 @@ import io.zeebe.util.retry.RetryStrategy;
 import io.zeebe.util.sched.ActorControl;
 import io.zeebe.util.sched.future.ActorFuture;
 import java.time.Duration;
+import java.util.EnumMap;
 import java.util.Objects;
 import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
@@ -108,11 +122,11 @@ public final class ProcessingStateMachine {
   private final int producerId;
   private final String streamProcessorName;
   private final StreamProcessorMetrics metrics;
-  private final StreamProcessor streamProcessor;
+  private final RecordProcessorMap recordProcessorMap;
   private final EventFilter eventFilter;
   private final LogStream logStream;
   private final LogStreamReader logStreamReader;
-  private final LogStreamRecordWriter logStreamWriter;
+  private final TypedStreamWriter logStreamWriter;
 
   private final DbContext dbContext;
   private final RetryStrategy writeRetryStrategy;
@@ -122,10 +136,19 @@ public final class ProcessingStateMachine {
   private final BooleanSupplier shouldProcessNext;
   private final BooleanSupplier abortCondition;
 
+  protected final ZeebeState zeebeState;
+
+  private final ErrorRecord errorRecord = new ErrorRecord();
+  protected final RecordMetadata metadata = new RecordMetadata();
+  protected final EnumMap<ValueType, UnpackedObject> eventCache;
+
+  protected final TypedEventImpl typedEvent = new TypedEventImpl();
+
   private ProcessingStateMachine(
       StreamProcessorContext context,
       StreamProcessorMetrics metrics,
-      StreamProcessor streamProcessor,
+      RecordProcessorMap recordProcessorMap,
+      ZeebeState zeebeState,
       DbContext dbContext,
       BooleanSupplier shouldProcessNext,
       BooleanSupplier abortCondition) {
@@ -134,22 +157,29 @@ public final class ProcessingStateMachine {
     this.streamProcessorName = context.getName();
     this.eventFilter = context.getEventFilter();
     this.logStreamReader = context.getLogStreamReader();
-    this.logStreamWriter = context.logStreamWriter;
+    this.logStreamWriter = context.getTypedStreamWriter();
     this.logStream = context.getLogStream();
 
     this.metrics = metrics;
-    this.streamProcessor = streamProcessor;
+    this.recordProcessorMap = recordProcessorMap;
+    this.zeebeState = zeebeState;
     this.dbContext = dbContext;
     this.writeRetryStrategy = new AbortableRetryStrategy(actor);
     this.sideEffectsRetryStrategy = new AbortableRetryStrategy(actor);
     this.updateStateRetryStrategy = new RecoverableRetryStrategy(actor);
     this.shouldProcessNext = shouldProcessNext;
     this.abortCondition = abortCondition;
+
+    this.eventCache = new EnumMap<>(ValueType.class);
+    EVENT_REGISTRY.forEach((t, c) -> eventCache.put(t, ReflectUtil.newInstance(c)));
+
+    this.responseWriter =
+        new TypedResponseWriterImpl(context.getCommandResponseWriter(), logStream.getPartitionId());
   }
 
   // current iteration
   private LoggedEvent currentEvent;
-  private EventProcessor eventProcessor;
+  private TypedRecordProcessor<?> currentProcessor;
   private ZeebeDbTransaction zeebeDbTransaction;
 
   private long eventPosition = -1L;
@@ -167,7 +197,7 @@ public final class ProcessingStateMachine {
   void readNextEvent() {
     if (shouldProcessNext.getAsBoolean()
         && logStreamReader.hasNext()
-        && eventProcessor == null
+        && currentProcessor == null
         && logStream.getCommitPosition() >= errorRecordPosition) {
 
       if (onErrorHandling) {
@@ -185,23 +215,74 @@ public final class ProcessingStateMachine {
     }
   }
 
+  static final String PROCESSING_ERROR_MESSAGE =
+      "Expected to process event '%s' without errors, but exception occurred with message '%s' .";
+
+  final int streamProcessorId;
+  protected final TypedStreamWriterImpl writer;
+  protected final TypedResponseWriterImpl responseWriter;
+
+  TypedRecordProcessor<?> eventProcessor;
+  protected TypedEventImpl event;
+  private SideEffectProducer sideEffectProducer;
+  private long position;
+
+  private void resetOutput() {
+    responseWriter.reset();
+    writer.reset();
+    this.writer.configureSourceContext(streamProcessorId, position);
+  }
+
+  public void setSideEffectProducer(final SideEffectProducer sideEffectProducer) {
+    this.sideEffectProducer = sideEffectProducer;
+  }
+
   private void processEvent(final LoggedEvent event) {
+
+    // choose next processor
     try {
-      eventProcessor = streamProcessor.onEvent(event);
+      metadata.reset();
+      event.readMetadata(metadata);
+
+      currentProcessor =
+          recordProcessorMap.get(
+              metadata.getRecordType(), metadata.getValueType(), metadata.getIntent().value());
     } catch (final Exception e) {
       LOG.error(ERROR_MESSAGE_ON_EVENT_FAILED_SKIP_EVENT, event, streamProcessorName, e);
       skipRecord();
       return;
     }
 
-    if (eventProcessor == null) {
+    // if no ones want to process it skip this event
+    if (currentProcessor == null) {
       skipRecord();
       return;
     }
 
+    // processing
     try {
+      final UnpackedObject value = eventCache.get(metadata.getValueType());
+      value.reset();
+      event.readValue(value);
+      typedEvent.wrap(event, metadata, value);
+
       zeebeDbTransaction = dbContext.getCurrentTransaction();
-      zeebeDbTransaction.run(eventProcessor::processEvent);
+      zeebeDbTransaction.run(
+          () -> {
+            // processing
+            resetOutput();
+
+            // default side effect is responses; can be changed by processor
+            sideEffectProducer = responseWriter;
+
+            final boolean isNotOnBlacklist = !zeebeState.isOnBlacklist(typedEvent);
+            if (isNotOnBlacklist) {
+              eventProcessor.processRecord(
+                  position, typedEvent, responseWriter, writer, this::setSideEffectProducer);
+            }
+
+            zeebeState.markAsProcessed(position);
+          });
       metrics.incrementEventsProcessedCount();
       writeEvent();
     } catch (final RecoverableException recoverableException) {
@@ -216,6 +297,41 @@ public final class ProcessingStateMachine {
       LOG.error(ERROR_MESSAGE_PROCESSING_FAILED_SKIP_EVENT, event, streamProcessorName, e);
       onError(e, this::writeEvent);
     }
+  }
+
+  private void writeRejectionOnCommand(Throwable exception) {
+    final String errorMessage =
+        String.format(PROCESSING_ERROR_MESSAGE, event, exception.getMessage());
+    LOG.error(errorMessage, exception);
+
+    if (event.metadata.getRecordType() == RecordType.COMMAND) {
+      sendCommandRejectionOnException(errorMessage);
+      writeCommandRejectionOnException(errorMessage);
+    }
+  }
+
+  private boolean shouldBeBlacklisted(Intent intent) {
+
+    if (isWorkflowInstanceRelated(intent)) {
+      final WorkflowInstanceRelatedIntent workflowInstanceRelatedIntent =
+          (WorkflowInstanceRelatedIntent) intent;
+
+      return workflowInstanceRelatedIntent.shouldBlacklistInstanceOnError();
+    }
+
+    return false;
+  }
+
+  private boolean isWorkflowInstanceRelated(Intent intent) {
+    return intent instanceof WorkflowInstanceRelatedIntent;
+  }
+
+  private void writeCommandRejectionOnException(String errorMessage) {
+    writer.appendRejection(event, RejectionType.PROCESSING_ERROR, errorMessage);
+  }
+
+  private void sendCommandRejectionOnException(String errorMessage) {
+    responseWriter.writeRejectionOnCommand(event, RejectionType.PROCESSING_ERROR, errorMessage);
   }
 
   private void onError(Throwable processingException, Runnable nextStep) {
@@ -235,7 +351,28 @@ public final class ProcessingStateMachine {
           }
           try {
             zeebeDbTransaction = dbContext.getCurrentTransaction();
-            zeebeDbTransaction.run(() -> eventProcessor.onError(processingException));
+            zeebeDbTransaction.run(
+                () -> {
+
+                  // old on error
+                  resetOutput();
+
+                  writeRejectionOnCommand(processingException);
+                  errorRecord.initErrorRecord(processingException, event.getPosition());
+
+                  final Intent intent = event.getMetadata().getIntent();
+                  if (shouldBeBlacklisted(intent)) {
+                    final UnpackedObject value = event.getValue();
+                    if (value instanceof WorkflowInstanceRelated) {
+                      final long workflowInstanceKey =
+                          ((WorkflowInstanceRelated) value).getWorkflowInstanceKey();
+                      zeebeState.blacklist(workflowInstanceKey);
+                      errorRecord.setWorkflowInstanceKey(workflowInstanceKey);
+                    }
+                  }
+
+                  writer.appendFollowUpEvent(event.getKey(), ErrorIntent.CREATED, errorRecord);
+                });
             onErrorHandling = true;
             nextStep.run();
           } catch (Exception ex) {
@@ -250,7 +387,7 @@ public final class ProcessingStateMachine {
     final ActorFuture<Boolean> retryFuture =
         writeRetryStrategy.runWithRetry(
             () -> {
-              eventPosition = eventProcessor.writeEvent(logStreamWriter);
+              eventPosition = logStreamWriter.flush();
               return eventPosition >= 0;
             },
             abortCondition);
@@ -302,7 +439,7 @@ public final class ProcessingStateMachine {
 
   private void executeSideEffects() {
     final ActorFuture<Boolean> retryFuture =
-        sideEffectsRetryStrategy.runWithRetry(eventProcessor::executeSideEffects, abortCondition);
+        sideEffectsRetryStrategy.runWithRetry(sideEffectProducer::flush, abortCondition);
 
     actor.runOnCompletion(
         retryFuture,
@@ -312,7 +449,7 @@ public final class ProcessingStateMachine {
           }
 
           // continue with next event
-          eventProcessor = null;
+          currentProcessor = null;
           actor.submit(this::readNextEvent);
         });
   }
@@ -336,20 +473,22 @@ public final class ProcessingStateMachine {
   public static class ProcessingStateMachineBuilder {
 
     private StreamProcessorMetrics metrics;
-    private StreamProcessor streamProcessor;
+    private RecordProcessorMap recordProcessorMap;
 
     private StreamProcessorContext streamProcessorContext;
     private DbContext dbContext;
     private BooleanSupplier shouldProcessNext;
     private BooleanSupplier abortCondition;
+    private ZeebeState zeebeState;
 
     public ProcessingStateMachineBuilder setMetrics(StreamProcessorMetrics metrics) {
       this.metrics = metrics;
       return this;
     }
 
-    public ProcessingStateMachineBuilder setStreamProcessor(StreamProcessor streamProcessor) {
-      this.streamProcessor = streamProcessor;
+    public ProcessingStateMachineBuilder setRecordProcessorMap(
+        RecordProcessorMap recordProcessorMap) {
+      this.recordProcessorMap = recordProcessorMap;
       return this;
     }
 
@@ -373,17 +512,25 @@ public final class ProcessingStateMachine {
       return this;
     }
 
+    public ProcessingStateMachineBuilder setZeebeState(ZeebeState zeebeState) {
+      this.zeebeState = zeebeState;
+      return this;
+    }
+
     public ProcessingStateMachine build() {
       Objects.requireNonNull(streamProcessorContext);
       Objects.requireNonNull(metrics);
-      Objects.requireNonNull(streamProcessor);
+      Objects.requireNonNull(recordProcessorMap);
       Objects.requireNonNull(dbContext);
       Objects.requireNonNull(shouldProcessNext);
       Objects.requireNonNull(abortCondition);
+      Objects.requireNonNull(zeebeState);
+
       return new ProcessingStateMachine(
           streamProcessorContext,
           metrics,
-          streamProcessor,
+          recordProcessorMap,
+          zeebeState,
           dbContext,
           shouldProcessNext,
           abortCondition);

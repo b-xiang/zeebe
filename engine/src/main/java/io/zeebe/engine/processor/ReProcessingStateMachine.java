@@ -23,6 +23,13 @@ import io.zeebe.db.ZeebeDbTransaction;
 import io.zeebe.logstreams.impl.Loggers;
 import io.zeebe.logstreams.log.LogStreamReader;
 import io.zeebe.logstreams.log.LoggedEvent;
+import io.zeebe.msgpack.UnpackedObject;
+import io.zeebe.protocol.WorkflowInstanceRelated;
+import io.zeebe.protocol.clientapi.ValueType;
+import io.zeebe.protocol.impl.record.RecordMetadata;
+import io.zeebe.protocol.impl.record.value.error.ErrorRecord;
+import io.zeebe.protocol.intent.ErrorIntent;
+import io.zeebe.protocol.intent.Intent;
 import io.zeebe.util.retry.EndlessRetryStrategy;
 import io.zeebe.util.retry.RetryStrategy;
 import io.zeebe.util.sched.ActorControl;
@@ -94,7 +101,9 @@ public final class ReProcessingStateMachine {
 
   private final ActorControl actor;
   private final String streamProcessorName;
-  private final StreamProcessor streamProcessor;
+  private final ErrorRecord errorRecord = new ErrorRecord();
+  protected final RecordMetadata metadata = new RecordMetadata();
+  private final RecordProcessorMap recordProcessorMap;
   private final EventFilter eventFilter;
   private final LogStreamReader logStreamReader;
 
@@ -107,7 +116,7 @@ public final class ReProcessingStateMachine {
 
   private ReProcessingStateMachine(
       StreamProcessorContext context,
-      StreamProcessor streamProcessor,
+      RecordProcessorMap recordProcessorMap,
       DbContext dbContext,
       BooleanSupplier abortCondition) {
     this.actor = context.getActorControl();
@@ -116,7 +125,7 @@ public final class ReProcessingStateMachine {
     this.logStreamReader = context.getLogStreamReader();
     this.producerId = context.getId();
 
-    this.streamProcessor = streamProcessor;
+    this.recordProcessorMap = recordProcessorMap;
     this.dbContext = dbContext;
     this.updateStateRetryStrategy = new EndlessRetryStrategy(actor);
     this.processRetryStrategy = new EndlessRetryStrategy(actor);
@@ -127,7 +136,7 @@ public final class ReProcessingStateMachine {
   private long lastSourceEventPosition;
   private ActorFuture<Void> recoveryFuture;
   private LoggedEvent currentEvent;
-  private EventProcessor eventProcessor;
+  private TypedRecordProcessor eventProcessor;
   private ZeebeDbTransaction zeebeDbTransaction;
 
   ActorFuture<Void> startRecover(final long snapshotPosition) {
@@ -160,7 +169,14 @@ public final class ReProcessingStateMachine {
       while (logStreamReader.hasNext()) {
         final LoggedEvent newEvent = logStreamReader.next();
 
-        final long errorPosition = streamProcessor.getFailedPosition(newEvent);
+        metadata.reset();
+        currentEvent.readMetadata(metadata);
+        long errorPosition = -1;
+        if (metadata.getValueType() == ValueType.ERROR) {
+          currentEvent.readValue(errorRecord);
+          errorPosition = errorRecord.getErrorEventPosition();
+        }
+
         if (errorPosition >= 0) {
           LOG.debug(
               "Found error-prone event {} on reprocessing, will add position {} to the blacklist.",
@@ -221,8 +237,14 @@ public final class ReProcessingStateMachine {
   }
 
   private void reprocessEvent(final LoggedEvent currentEvent) {
+
     try {
-      eventProcessor = streamProcessor.onEvent(currentEvent);
+      metadata.reset();
+      currentEvent.readMetadata(metadata);
+
+      eventProcessor =
+          recordProcessorMap.get(
+              metadata.getRecordType(), metadata.getValueType(), metadata.getIntent().value());
     } catch (final Exception e) {
       LOG.error(ERROR_MESSAGE_ON_EVENT_FAILED_SKIP_EVENT, currentEvent, streamProcessorName, e);
     }
@@ -265,9 +287,45 @@ public final class ReProcessingStateMachine {
     if (failedEventPositions.contains(currentEvent.getPosition())) {
       LOG.info(LOG_STMT_FAILED_ON_PROCESSING, currentEvent);
       operationOnProcessing =
-          () -> eventProcessor.onError(new Exception("Failed on last processing."));
+          () -> {
+
+            // old on error
+            resetOutput();
+
+            writeRejectionOnCommand(processingException);
+            errorRecord.initErrorRecord(processingException, event.getPosition());
+
+            final Intent intent = event.getMetadata().getIntent();
+            if (shouldBeBlacklisted(intent)) {
+              final UnpackedObject value = event.getValue();
+              if (value instanceof WorkflowInstanceRelated) {
+                final long workflowInstanceKey =
+                  ((WorkflowInstanceRelated) value).getWorkflowInstanceKey();
+                zeebeState.blacklist(workflowInstanceKey);
+                errorRecord.setWorkflowInstanceKey(workflowInstanceKey);
+              }
+            }
+
+            writer.appendFollowUpEvent(event.getKey(), ErrorIntent.CREATED, errorRecord);
+
+          };
+          //eventProcessor.onError(new Exception("Failed on last processing."));
     } else {
-      operationOnProcessing = eventProcessor::processEvent;
+      operationOnProcessing = () -> {
+        // processing
+        resetOutput();
+
+        // default side effect is responses; can be changed by processor
+        sideEffectProducer = responseWriter;
+
+        final boolean isNotOnBlacklist = !zeebeState.isOnBlacklist(typedEvent);
+        if (isNotOnBlacklist) {
+          eventProcessor.processRecord(
+            position, typedEvent, responseWriter, writer, this::setSideEffectProducer);
+        }
+
+        zeebeState.markAsProcessed(position);
+      }
     }
     return operationOnProcessing;
   }
@@ -309,11 +367,12 @@ public final class ReProcessingStateMachine {
 
     private StreamProcessorContext streamProcessorContext;
     private DbContext dbContext;
-    private StreamProcessor streamProcessor;
+    private RecordProcessorMap recordProcessorMap;
     private BooleanSupplier abortCondition;
 
-    public ReprocessingStateMachineBuilder setStreamProcessor(StreamProcessor streamProcessor) {
-      this.streamProcessor = streamProcessor;
+    public ReprocessingStateMachineBuilder setRecordProcessorMap(
+        RecordProcessorMap recordProcessorMap) {
+      this.recordProcessorMap = recordProcessorMap;
       return this;
     }
 
@@ -335,11 +394,11 @@ public final class ReProcessingStateMachine {
 
     public ReProcessingStateMachine build() {
       Objects.requireNonNull(streamProcessorContext);
-      Objects.requireNonNull(streamProcessor);
+      Objects.requireNonNull(recordProcessorMap);
       Objects.requireNonNull(dbContext);
       Objects.requireNonNull(abortCondition);
       return new ReProcessingStateMachine(
-          streamProcessorContext, streamProcessor, dbContext, abortCondition);
+          streamProcessorContext, recordProcessorMap, dbContext, abortCondition);
     }
   }
 }

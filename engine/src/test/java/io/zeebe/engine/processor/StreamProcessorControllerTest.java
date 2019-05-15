@@ -118,7 +118,7 @@ public class StreamProcessorControllerTest {
     // then
     final InOrder inOrder = inOrder(streamProcessor, eventProcessor, snapshotController);
     inOrder.verify(streamProcessor, times(1)).onOpen(any());
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
 
     inOrder.verify(eventProcessor, times(1)).processEvent();
     inOrder.verify(eventProcessor, times(1)).writeEvent(any());
@@ -142,7 +142,7 @@ public class StreamProcessorControllerTest {
                     return invocationOnMock.callRealMethod();
                   }))
               .when(streamProcessor)
-              .onEvent(any());
+              .shouldProcess(any());
 
           doThrow(new RecoverableException("expected", new RuntimeException("expected")))
               .when(dbContext)
@@ -157,7 +157,7 @@ public class StreamProcessorControllerTest {
     // then
     final InOrder inOrder = inOrder(streamProcessor, eventProcessor, snapshotController);
     inOrder.verify(streamProcessor, times(1)).onOpen(any());
-    inOrder.verify(streamProcessor, atLeast(2)).onEvent(any());
+    inOrder.verify(streamProcessor, atLeast(2)).shouldProcess(any());
 
     inOrder.verify(streamProcessor, times(1)).onClose();
     inOrder.verify(snapshotController, times(1)).close();
@@ -179,7 +179,7 @@ public class StreamProcessorControllerTest {
     // then
     final InOrder inOrder = inOrder(streamProcessor, eventProcessor, snapshotController);
     inOrder.verify(streamProcessor, times(1)).onOpen(any());
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
 
     inOrder.verify(eventProcessor, times(1)).processEvent();
     inOrder.verify(eventProcessor, times(1)).onError(any());
@@ -239,7 +239,7 @@ public class StreamProcessorControllerTest {
     // when
     // return null as event processor for first event
     changeMockInActorContext(
-        () -> doReturn(null).doCallRealMethod().when(streamProcessor).onEvent(any()));
+        () -> doReturn(null).doCallRealMethod().when(streamProcessor).shouldProcess(any()));
     writer.writeEvent(EVENT_1);
     final long secondEventPosition = writer.writeEvent(EVENT_2);
 
@@ -250,7 +250,7 @@ public class StreamProcessorControllerTest {
     assertThat(processedEvent.getPosition()).isEqualTo(secondEventPosition);
 
     final InOrder inOrder = inOrder(streamProcessor, eventProcessor);
-    inOrder.verify(streamProcessor, times(2)).onEvent(any());
+    inOrder.verify(streamProcessor, times(2)).shouldProcess(any());
     inOrder.verify(eventProcessor, times(1)).processEvent();
   }
 
@@ -268,7 +268,7 @@ public class StreamProcessorControllerTest {
     assertThat(processedEvent.getPosition()).isEqualTo(secondEventPosition);
 
     final InOrder inOrder = inOrder(streamProcessor, eventProcessor);
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
     inOrder.verify(eventProcessor, times(1)).processEvent();
   }
 
@@ -527,7 +527,7 @@ public class StreamProcessorControllerTest {
                       return invocationOnMock.callRealMethod();
                     })
                 .when(streamProcessor)
-                .onEvent(any()));
+                .shouldProcess(any()));
 
     // when
     writer.writeEvents(3, EVENT_1);
@@ -536,7 +536,7 @@ public class StreamProcessorControllerTest {
     waitUntil(() -> count.get() == 3);
 
     final InOrder inOrderStreamProcessor = inOrder(streamProcessor);
-    inOrderStreamProcessor.verify(streamProcessor, times(3)).onEvent(any());
+    inOrderStreamProcessor.verify(streamProcessor, times(3)).shouldProcess(any());
     inOrderStreamProcessor.verifyNoMoreInteractions();
 
     final InOrder inOrder = inOrder(eventProcessor);

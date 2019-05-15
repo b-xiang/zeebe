@@ -17,8 +17,7 @@
  */
 package io.zeebe.engine.processor;
 
-import io.zeebe.db.DbContext;
-import io.zeebe.db.ZeebeDb;
+import io.zeebe.engine.state.ZeebeState;
 import io.zeebe.util.sched.ActorControl;
 
 @FunctionalInterface
@@ -32,5 +31,5 @@ public interface StreamProcessorFactory {
    * @param dbContext the context on which the processor should run
    * @return the created stream processor
    */
-  StreamProcessor createProcessor(ActorControl actor, ZeebeDb zeebeDb, DbContext dbContext);
+  RecordProcessorMap createProcessorMap(ActorControl actor, ZeebeState zeebeState);
 }

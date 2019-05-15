@@ -295,7 +295,7 @@ public class StreamProcessorReprocessingTest {
         .extracting(LoggedEvent::getPosition)
         .containsOnly(eventPosition1, eventPosition2);
 
-    verify(streamProcessor, timeout(500).times(2)).onEvent(any());
+    verify(streamProcessor, timeout(500).times(2)).shouldProcess(any());
     verify(dbContext, timeout(500).atLeast(3)).getCurrentTransaction();
     verify(eventProcessor, timeout(500).times(3)).processEvent();
   }
@@ -357,7 +357,7 @@ public class StreamProcessorReprocessingTest {
 
     // when
     openStreamProcessorController(
-        () -> doReturn(null).doCallRealMethod().when(streamProcessor).onEvent(any()));
+        () -> doReturn(null).doCallRealMethod().when(streamProcessor).shouldProcess(any()));
 
     waitUntil(() -> streamProcessor.getProcessedEventCount() == 2);
 
@@ -405,7 +405,7 @@ public class StreamProcessorReprocessingTest {
     final ActorFuture<Void> future =
         openStreamProcessorControllerAsync(
             () -> {
-              doThrow(new RuntimeException("expected")).when(streamProcessor).onEvent(any());
+              doThrow(new RuntimeException("expected")).when(streamProcessor).shouldProcess(any());
             });
 
     // when
@@ -504,9 +504,9 @@ public class StreamProcessorReprocessingTest {
     }
 
     @Override
-    public EventProcessor onEvent(LoggedEvent event) {
+    public EventProcessor shouldProcess(LoggedEvent event) {
       currentEvent = event;
-      return super.onEvent(event);
+      return super.shouldProcess(event);
     }
 
     @Override

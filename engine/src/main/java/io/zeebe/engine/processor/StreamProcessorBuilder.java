@@ -22,9 +22,6 @@ import static io.zeebe.engine.processor.StreamProcessorServiceNames.streamProces
 import io.zeebe.logstreams.impl.service.LogStreamServiceNames;
 import io.zeebe.logstreams.log.BufferedLogStreamReader;
 import io.zeebe.logstreams.log.LogStream;
-import io.zeebe.logstreams.log.LogStreamReader;
-import io.zeebe.logstreams.log.LogStreamRecordWriter;
-import io.zeebe.logstreams.log.LogStreamWriterImpl;
 import io.zeebe.logstreams.spi.SnapshotController;
 import io.zeebe.servicecontainer.ServiceBuilder;
 import io.zeebe.servicecontainer.ServiceContainer;
@@ -42,20 +39,18 @@ public class StreamProcessorBuilder {
   protected LogStream logStream;
 
   protected ActorScheduler actorScheduler;
+  protected ServiceContainer serviceContainer;
 
   protected Duration snapshotPeriod;
   protected SnapshotController snapshotController;
 
-  private LogStreamReader logStreamReader;
-  protected LogStreamRecordWriter logStreamWriter;
-
   private EventFilter eventFilter;
 
-  protected ServiceContainer serviceContainer;
   private List<ServiceName<?>> additionalDependencies;
   private StreamProcessorFactory streamProcessorFactory;
   private int maxSnapshots;
   private boolean deleteDataOnSnapshot;
+  private CommandResponseWriter commmandResponseWriter;
 
   public StreamProcessorBuilder(int id, String name) {
     this.id = id;
@@ -147,34 +142,24 @@ public class StreamProcessorBuilder {
     Objects.requireNonNull(actorScheduler, "No task scheduler provided.");
     Objects.requireNonNull(serviceContainer, "No service container provided.");
     Objects.requireNonNull(snapshotController, "No snapshot controller provided.");
+    Objects.requireNonNull(commmandResponseWriter, "No command response writer provided.");
   }
 
   private StreamProcessorContext createContext() {
     final StreamProcessorContext ctx = new StreamProcessorContext();
-    ctx.setId(id);
-    ctx.setName(name);
-    ctx.setStreamProcessorFactory(streamProcessorFactory);
-
-    ctx.setLogStream(logStream);
-
-    ctx.setActorScheduler(actorScheduler);
-
-    ctx.setEventFilter(eventFilter);
-
-    if (snapshotPeriod == null) {
-      snapshotPeriod = Duration.ofMinutes(1);
-    }
-
-    ctx.setSnapshotPeriod(snapshotPeriod);
-    ctx.setMaxSnapshots(maxSnapshots);
-    ctx.setSnapshotController(snapshotController);
-    ctx.setDeleteDataOnSnapshot(deleteDataOnSnapshot);
-
-    logStreamReader = new BufferedLogStreamReader();
-    ctx.setLogStreamReader(logStreamReader);
-
-    logStreamWriter = new LogStreamWriterImpl();
-    ctx.setLogStreamWriter(logStreamWriter);
+    ctx.id(id)
+        .name(name)
+        .logStream(logStream)
+        .actorScheduler(actorScheduler)
+        .eventFilter(eventFilter)
+        .snapshotPeriod(snapshotPeriod == null ? Duration.ofMinutes(1) : snapshotPeriod)
+        .maxSnapshots(maxSnapshots)
+        .snapshotController(snapshotController)
+        .deleteDataOnSnapshot(deleteDataOnSnapshot)
+        .streamProcessorFactory(streamProcessorFactory)
+        .commandResponseWriter(commmandResponseWriter)
+        .logStreamReader(new BufferedLogStreamReader(logStream))
+        .typedStreamWriter(new TypedStreamWriterImpl(logStream));
 
     return ctx;
   }

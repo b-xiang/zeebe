@@ -19,11 +19,12 @@ package io.zeebe.engine.processor;
 
 import io.zeebe.logstreams.log.LogStream;
 import io.zeebe.logstreams.log.LogStreamReader;
-import io.zeebe.logstreams.log.LogStreamRecordWriter;
 import io.zeebe.logstreams.spi.SnapshotController;
 import io.zeebe.util.sched.ActorControl;
 import io.zeebe.util.sched.ActorScheduler;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 public class StreamProcessorContext {
   protected int id;
@@ -31,13 +32,15 @@ public class StreamProcessorContext {
 
   protected LogStream logStream;
 
+  private CommandResponseWriter commandResponseWriter;
   private LogStreamReader logStreamReader;
-  protected LogStreamRecordWriter logStreamWriter;
+  private TypedStreamWriter typedStreamWriter;
 
   protected Duration snapshotPeriod;
   protected SnapshotController snapshotController;
 
   protected ActorScheduler actorScheduler;
+  protected final List<StreamProcessorLifecycleAware> lifecycleListeners = new ArrayList<>();
   private ActorControl actorControl;
 
   private EventFilter eventFilter;
@@ -46,134 +49,159 @@ public class StreamProcessorContext {
   private Runnable resumeRunnable;
   private int maxSnapshots;
   private boolean deleteDataOnSnapshot;
+  private StreamProcessorFactory streamProcessorFactory;
 
-  public LogStream getLogStream() {
-    return logStream;
-  }
-
-  public void setLogStream(LogStream logstream) {
-    this.logStream = logstream;
+  public int getId() {
+    return id;
   }
 
   public String getName() {
     return name;
   }
 
-  public void setName(String name) {
-    this.name = name;
+  public LogStream getLogStream() {
+    return logStream;
   }
 
-  public int getId() {
-    return id;
-  }
-
-  public void setId(int id) {
-    this.id = id;
-  }
-
-  public ActorScheduler getActorScheduler() {
-    return actorScheduler;
-  }
-
-  public void setActorScheduler(ActorScheduler actorScheduler) {
-    this.actorScheduler = actorScheduler;
-  }
-
-  public void setLogStreamReader(LogStreamReader logStreamReader) {
-    this.logStreamReader = logStreamReader;
+  public CommandResponseWriter getCommandResponseWriter() {
+    return commandResponseWriter;
   }
 
   public LogStreamReader getLogStreamReader() {
     return logStreamReader;
   }
 
-  public LogStreamRecordWriter getLogStreamWriter() {
-    return logStreamWriter;
-  }
-
-  public void setLogStreamWriter(LogStreamRecordWriter logStreamWriter) {
-    this.logStreamWriter = logStreamWriter;
+  public TypedStreamWriter getTypedStreamWriter() {
+    return typedStreamWriter;
   }
 
   public Duration getSnapshotPeriod() {
     return snapshotPeriod;
   }
 
-  public void setSnapshotPeriod(Duration snapshotPeriod) {
-    this.snapshotPeriod = snapshotPeriod;
-  }
-
   public SnapshotController getSnapshotController() {
     return snapshotController;
   }
 
-  public void setSnapshotController(SnapshotController snapshotController) {
-    this.snapshotController = snapshotController;
-  }
-
-  public void setEventFilter(EventFilter eventFilter) {
-    this.eventFilter = eventFilter;
-  }
-
-  public EventFilter getEventFilter() {
-    return eventFilter;
+  public ActorScheduler getActorScheduler() {
+    return actorScheduler;
   }
 
   public ActorControl getActorControl() {
     return actorControl;
   }
 
-  public void setActorControl(ActorControl actorControl) {
-    this.actorControl = actorControl;
+  public EventFilter getEventFilter() {
+    return eventFilter;
   }
 
   public Runnable getSuspendRunnable() {
     return suspendRunnable;
   }
 
-  public void setSuspendRunnable(Runnable suspendRunnable) {
-    this.suspendRunnable = suspendRunnable;
-  }
-
-  public void suspendController() {
-    suspendRunnable.run();
-  }
-
   public Runnable getResumeRunnable() {
     return resumeRunnable;
-  }
-
-  public void setResumeRunnable(Runnable resumeRunnable) {
-    this.resumeRunnable = resumeRunnable;
-  }
-
-  public void resumeController() {
-    resumeRunnable.run();
-  }
-
-  private StreamProcessorFactory streamProcessorFactory;
-
-  public void setStreamProcessorFactory(StreamProcessorFactory streamProcessorFactory) {
-    this.streamProcessorFactory = streamProcessorFactory;
-  }
-
-  public StreamProcessorFactory getStreamProcessorFactory() {
-    return streamProcessorFactory;
-  }
-
-  public void setMaxSnapshots(final int maxSnapshots) {
-    this.maxSnapshots = maxSnapshots;
   }
 
   public int getMaxSnapshots() {
     return maxSnapshots;
   }
 
-  public void setDeleteDataOnSnapshot(final boolean deleteDataOnSnapshot) {
-    this.deleteDataOnSnapshot = deleteDataOnSnapshot;
+  public boolean isDeleteDataOnSnapshot() {
+    return deleteDataOnSnapshot;
   }
 
-  public boolean getDeleteDataOnSnapshot() {
-    return deleteDataOnSnapshot;
+  public StreamProcessorFactory getStreamProcessorFactory() {
+    return streamProcessorFactory;
+  }
+
+  public List<StreamProcessorLifecycleAware> getLifecycleListeners() {
+    return lifecycleListeners;
+  }
+
+  public StreamProcessorContext id(int id) {
+    this.id = id;
+    return this;
+  }
+
+  public StreamProcessorContext name(String name) {
+    this.name = name;
+    return this;
+  }
+
+  public StreamProcessorContext logStream(LogStream logStream) {
+    this.logStream = logStream;
+    return this;
+  }
+
+  public StreamProcessorContext commandResponseWriter(CommandResponseWriter commandResponseWriter) {
+    this.commandResponseWriter = commandResponseWriter;
+    return this;
+  }
+
+  public StreamProcessorContext logStreamReader(LogStreamReader logStreamReader) {
+    this.logStreamReader = logStreamReader;
+    return this;
+  }
+
+  public StreamProcessorContext typedStreamWriter(TypedStreamWriter typedStreamWriter) {
+    this.typedStreamWriter = typedStreamWriter;
+    return this;
+  }
+
+  public StreamProcessorContext snapshotPeriod(Duration snapshotPeriod) {
+    this.snapshotPeriod = snapshotPeriod;
+    return this;
+  }
+
+  public StreamProcessorContext snapshotController(SnapshotController snapshotController) {
+    this.snapshotController = snapshotController;
+    return this;
+  }
+
+  public StreamProcessorContext actorScheduler(ActorScheduler actorScheduler) {
+    this.actorScheduler = actorScheduler;
+    return this;
+  }
+
+  public StreamProcessorContext actorControl(ActorControl actorControl) {
+    this.actorControl = actorControl;
+    return this;
+  }
+
+  public StreamProcessorContext eventFilter(EventFilter eventFilter) {
+    this.eventFilter = eventFilter;
+    return this;
+  }
+
+  public StreamProcessorContext suspendRunnable(Runnable suspendRunnable) {
+    this.suspendRunnable = suspendRunnable;
+    return this;
+  }
+
+  public StreamProcessorContext resumeRunnable(Runnable resumeRunnable) {
+    this.resumeRunnable = resumeRunnable;
+    return this;
+  }
+
+  public StreamProcessorContext maxSnapshots(int maxSnapshots) {
+    this.maxSnapshots = maxSnapshots;
+    return this;
+  }
+
+  public StreamProcessorContext deleteDataOnSnapshot(boolean deleteDataOnSnapshot) {
+    this.deleteDataOnSnapshot = deleteDataOnSnapshot;
+    return this;
+  }
+
+  public StreamProcessorContext streamProcessorFactory(
+      StreamProcessorFactory streamProcessorFactory) {
+    this.streamProcessorFactory = streamProcessorFactory;
+    return this;
+  }
+
+  public StreamProcessorContext lifecycleListener(StreamProcessorLifecycleAware lifecycleListener) {
+    this.lifecycleListeners.add(lifecycleListener);
+    return this;
   }
 }

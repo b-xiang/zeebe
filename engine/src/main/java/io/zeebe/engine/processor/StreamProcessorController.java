@@ -19,10 +19,10 @@ package io.zeebe.engine.processor;
 
 import io.zeebe.db.DbContext;
 import io.zeebe.db.ZeebeDb;
+import io.zeebe.engine.state.ZeebeState;
 import io.zeebe.logstreams.impl.Loggers;
 import io.zeebe.logstreams.log.LogStream;
 import io.zeebe.logstreams.log.LogStreamReader;
-import io.zeebe.logstreams.log.LogStreamRecordWriter;
 import io.zeebe.logstreams.spi.SnapshotController;
 import io.zeebe.util.LangUtil;
 import io.zeebe.util.metrics.MetricsManager;
@@ -31,6 +31,7 @@ import io.zeebe.util.sched.ActorCondition;
 import io.zeebe.util.sched.ActorScheduler;
 import io.zeebe.util.sched.future.ActorFuture;
 import io.zeebe.util.sched.future.CompletableActorFuture;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 
@@ -40,13 +41,10 @@ public class StreamProcessorController extends Actor {
 
   private final StreamProcessorFactory streamProcessorFactory;
   private final boolean deleteDataOnSnapshot;
-  private StreamProcessor streamProcessor;
+  private final LogStreamReader logStreamReader;
   private final StreamProcessorContext streamProcessorContext;
   private final SnapshotController snapshotController;
   private String partitionId;
-
-  private final LogStreamReader logStreamReader;
-  private final LogStreamRecordWriter logStreamWriter;
 
   private final ActorScheduler actorScheduler;
   private final AtomicBoolean isOpened = new AtomicBoolean(false);
@@ -65,22 +63,25 @@ public class StreamProcessorController extends Actor {
   private AsyncSnapshotDirector asyncSnapshotDirector;
   private final int maxSnapshots;
 
+  private final List<StreamProcessorLifecycleAware> lifecycleAwareListeners;
+  private RecordProcessorMap recordProcessorMap;
+  private ZeebeState zeebeState;
+
   public StreamProcessorController(final StreamProcessorContext context) {
     this.streamProcessorContext = context;
-    this.streamProcessorContext.setActorControl(actor);
-
-    this.streamProcessorContext.setSuspendRunnable(this::suspend);
-    this.streamProcessorContext.setResumeRunnable(this::resume);
-
     this.actorScheduler = context.getActorScheduler();
+
+    this.streamProcessorContext
+        .actorControl(actor)
+        .suspendRunnable(this::suspend)
+        .resumeRunnable(this::resume);
 
     this.streamProcessorFactory = context.getStreamProcessorFactory();
     this.snapshotController = context.getSnapshotController();
-
     this.logStreamReader = context.getLogStreamReader();
-    this.logStreamWriter = context.getLogStreamWriter();
     this.maxSnapshots = context.getMaxSnapshots();
-    this.deleteDataOnSnapshot = context.getDeleteDataOnSnapshot();
+    this.deleteDataOnSnapshot = context.isDeleteDataOnSnapshot();
+    this.lifecycleAwareListeners = context.getLifecycleListeners();
   }
 
   @Override
@@ -105,9 +106,6 @@ public class StreamProcessorController extends Actor {
     final String processorName = getName();
 
     metrics = new StreamProcessorMetrics(metricsManager, processorName, partitionId);
-
-    logStreamReader.wrap(logStream);
-    logStreamWriter.wrap(logStream);
   }
 
   @Override
@@ -116,7 +114,7 @@ public class StreamProcessorController extends Actor {
       LOG.info("Recovering state of partition {} from snapshot", partitionId);
       snapshotPosition = recoverFromSnapshot();
 
-      streamProcessor.onOpen(streamProcessorContext);
+      lifecycleAwareListeners.forEach(l -> l.onOpen(streamProcessorContext));
     } catch (final Throwable e) {
       onFailure();
       LangUtil.rethrowUnchecked(e);
@@ -127,7 +125,8 @@ public class StreamProcessorController extends Actor {
           ProcessingStateMachine.builder()
               .setStreamProcessorContext(streamProcessorContext)
               .setMetrics(metrics)
-              .setStreamProcessor(streamProcessor)
+              .setRecordProcessorMap(recordProcessorMap)
+              .setZeebeState(zeebeState)
               .setDbContext(dbContext)
               .setShouldProcessNext(() -> isOpened() && !isSuspended())
               .setAbortCondition(this::isClosed)
@@ -136,7 +135,8 @@ public class StreamProcessorController extends Actor {
       final ReProcessingStateMachine reProcessingStateMachine =
           ReProcessingStateMachine.builder()
               .setStreamProcessorContext(streamProcessorContext)
-              .setStreamProcessor(streamProcessor)
+              .setRecordProcessorMap(recordProcessorMap)
+              //              .setZeebeState(zeebeState)
               .setDbContext(dbContext)
               .setAbortCondition(this::isClosed)
               .build();
@@ -163,12 +163,13 @@ public class StreamProcessorController extends Actor {
   private long recoverFromSnapshot() throws Exception {
     final long lowerBoundSnapshotPosition = snapshotController.recover();
     final ZeebeDb zeebeDb = snapshotController.openDb();
-
     dbContext = zeebeDb.createContext();
-    streamProcessor = streamProcessorFactory.createProcessor(actor, zeebeDb, dbContext);
+    zeebeState = new ZeebeState(zeebeDb, dbContext);
 
-    final long snapshotPosition = streamProcessor.getPositionToRecoverFrom();
+    recordProcessorMap = streamProcessorFactory.createProcessorMap(actor, zeebeState);
+    recordProcessorMap.values().forEachRemaining(p -> this.lifecycleAwareListeners.add(p));
 
+    final long snapshotPosition = zeebeState.getLastSuccessfuProcessedRecordPosition();
     ReaderRecover.recoverReader(
         logStreamReader, lowerBoundSnapshotPosition, snapshotPosition, getName());
 
@@ -205,7 +206,7 @@ public class StreamProcessorController extends Actor {
     logStream.registerOnCommitPositionUpdatedCondition(onCommitPositionUpdatedCondition);
 
     // start reading
-    streamProcessor.onRecovered();
+    lifecycleAwareListeners.forEach(l -> l.onRecovered(streamProcessorContext));
     actor.submit(processingStateMachine::readNextEvent);
   }
 
@@ -220,7 +221,7 @@ public class StreamProcessorController extends Actor {
   @Override
   protected void onActorCloseRequested() {
     if (!isFailed()) {
-      streamProcessor.onClose();
+      lifecycleAwareListeners.forEach(l -> l.onClose());
     }
   }
 

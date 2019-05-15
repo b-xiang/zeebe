@@ -78,7 +78,7 @@ public class RecordingStreamProcessor implements StreamProcessor {
   }
 
   @Override
-  public EventProcessor onEvent(LoggedEvent event) {
+  public EventProcessor shouldProcess(LoggedEvent event) {
     final LoggedEventImpl e = (LoggedEventImpl) event;
 
     final LoggedEventImpl copy = new LoggedEventImpl();

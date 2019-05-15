@@ -73,7 +73,7 @@ public class ReProcessingStateMachineTest {
     when(dbContext.getCurrentTransaction()).thenReturn(zeebeDbTransaction);
 
     eventProcessor = mock(EventProcessor.class);
-    when(streamProcessor.onEvent(any())).thenReturn(eventProcessor);
+    when(streamProcessor.shouldProcess(any())).thenReturn(eventProcessor);
     when(streamProcessor.getFailedPosition(any())).thenReturn(-1L);
 
     final StreamProcessorContext streamProcessorContext = new StreamProcessorContext();
@@ -84,7 +84,7 @@ public class ReProcessingStateMachineTest {
     reProcessingStateMachine =
         ReProcessingStateMachine.builder()
             .setStreamProcessorContext(streamProcessorContext)
-            .setStreamProcessor(streamProcessor)
+            .setRecordProcessorMap(streamProcessor)
             .setDbContext(dbContext)
             .setAbortCondition(() -> false)
             .build();
@@ -109,7 +109,7 @@ public class ReProcessingStateMachineTest {
     latch.await();
     final InOrder inOrder =
         Mockito.inOrder(streamProcessor, eventProcessor, dbContext, zeebeDbTransaction);
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
 
     // process
     inOrder.verify(dbContext, times(1)).getCurrentTransaction();
@@ -140,7 +140,7 @@ public class ReProcessingStateMachineTest {
     latch.await();
     final InOrder inOrder =
         Mockito.inOrder(streamProcessor, eventProcessor, dbContext, zeebeDbTransaction);
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
 
     // event on error
     inOrder.verify(dbContext, times(1)).getCurrentTransaction();
@@ -174,7 +174,7 @@ public class ReProcessingStateMachineTest {
     latch.await();
     final InOrder inOrder =
         Mockito.inOrder(streamProcessor, eventProcessor, dbContext, zeebeDbTransaction);
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
     // process
     inOrder.verify(dbContext, times(1)).getCurrentTransaction();
     inOrder.verify(zeebeDbTransaction, times(1)).run(any());
@@ -218,7 +218,7 @@ public class ReProcessingStateMachineTest {
     final InOrder inOrder =
         Mockito.inOrder(streamProcessor, eventProcessor, dbContext, zeebeDbTransaction);
     inOrder.verify(streamProcessor, times(1)).getFailedPosition(any());
-    inOrder.verify(streamProcessor, times(1)).onEvent(any());
+    inOrder.verify(streamProcessor, times(1)).shouldProcess(any());
 
     // process
     inOrder.verify(dbContext, times(1)).getCurrentTransaction();

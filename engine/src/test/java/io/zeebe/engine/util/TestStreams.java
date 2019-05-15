@@ -441,7 +441,7 @@ public class TestStreams {
               .streamProcessorFactory(
                   (actor, zeebeDb, dbContext) -> {
                     currentStreamProcessor.wrap(
-                        factory.createProcessor(actor, zeebeDb, dbContext), openFuture);
+                        factory.createProcessorMap(actor, zeebeDb, dbContext), openFuture);
                     return currentStreamProcessor;
                   })
               .build()
@@ -482,11 +482,11 @@ public class TestStreams {
     }
 
     @Override
-    public EventProcessor onEvent(final LoggedEvent event) {
+    public EventProcessor shouldProcess(final LoggedEvent event) {
       final Predicate<LoggedEvent> suspensionCondition = this.blockAfterCondition.get();
       blockAfterCurrentEvent = suspensionCondition != null && suspensionCondition.test(event);
 
-      final EventProcessor actualProcessor = wrappedProcessor.onEvent(event);
+      final EventProcessor actualProcessor = wrappedProcessor.shouldProcess(event);
 
       return new EventProcessor() {
 

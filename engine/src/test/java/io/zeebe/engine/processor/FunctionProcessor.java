@@ -29,7 +29,7 @@ public class FunctionProcessor implements StreamProcessor, EventProcessor {
   }
 
   @Override
-  public EventProcessor onEvent(LoggedEvent event) {
+  public EventProcessor shouldProcess(LoggedEvent event) {
     function.accept(event);
     return this;
   }
